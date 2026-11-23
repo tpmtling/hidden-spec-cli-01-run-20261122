@@ -663,7 +663,9 @@ function parseSearchReplace(lines: string[], strict: boolean): Edit[] {
     lastEnd = i + 1;
     i++;
   }
-  if (blocks.length === 0) throw new Exit2('error: format');
+  // A patch in which the reader finds no edit at all is `error: parse 1` (section 2); `error: format`
+  // is only for auto-detection finding no format, which never reaches this parser.
+  if (blocks.length === 0) throw new Exit2('error: parse 1');
   return blocks.map((b) => searchReplaceEdit(b, strict));
 }
 
@@ -703,7 +705,8 @@ interface V4aSection {
   path: string;
   line: number;
   moveTo: string | null;
-  lines: string[];
+  /** Add File lines: `text` is the line of the file; `blank` is true when the patch line itself was empty. */
+  lines: Array<{ text: string; blank: boolean }>;
   chunks: V4aChunk[];
 }
 
@@ -741,7 +744,9 @@ function parseV4a(lines: string[], strict: boolean): Edit[] {
       }
     }
     if (sec.kind === 'add') {
-      while (sec.lines.length > 0 && sec.lines[sec.lines.length - 1]!.trim() === '') sec.lines.pop();
+      // A lone `+` line is a line of the file, even when its text is empty; only a patch line that is
+      // itself empty is a blank line, and blank lines at the end of a section are not part of it (section 8).
+      while (sec.lines.length > 0 && sec.lines[sec.lines.length - 1]!.blank) sec.lines.pop();
     }
     sections.push(sec);
     sec = null;
@@ -774,8 +779,8 @@ function parseV4a(lines: string[], strict: boolean): Edit[] {
       throw new Exit2(`error: parse ${i + 1}`);
     }
     if (sec.kind === 'add') {
-      if (line.startsWith('+')) sec.lines.push(line.slice(1));
-      else if (line === '') sec.lines.push('');
+      if (line.startsWith('+')) sec.lines.push({ text: line.slice(1), blank: false });
+      else if (line === '') sec.lines.push({ text: '', blank: true });
       else throw new Exit2(`error: parse ${i + 1}`);
       i++;
       continue;
@@ -839,7 +844,8 @@ function v4aEdit(s: V4aSection, strict: boolean): Edit {
     if (!safe(s.path)) throw new Fail('unsafe', s.path);
     if (s.kind === 'add') {
       if (tree.get(s.path) !== null) throw new Fail('exists', s.path);
-      tree.now.set(s.path, s.lines.length === 0 ? '' : s.lines.join('\n') + '\n');
+      const texts = s.lines.map((l) => l.text);
+      tree.now.set(s.path, texts.length === 0 ? '' : texts.join('\n') + '\n');
       return { moves: [] };
     }
     if (s.kind === 'delete') {
